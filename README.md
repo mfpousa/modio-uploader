@@ -10,15 +10,31 @@ A straightforward, interactive tool to upload and manage your Unreal Engine 4 mo
 
 ## How to Use
 
-Double-click **`LaunchUploader.bat`** to open the menu. The main menu now includes a "Heads-up display" showing the current live metadata of your mod, including latest update time, active File IDs for Win/Andr/Svr, and the most recent changelog right from the active target file!
+Double-click **`LaunchUploader.bat`** to open the menu. The main menu includes a rich **Heads-up display** showing the live metadata of your mod, including the latest update time, active File IDs and file names for Win/Andr/Svr, and the most recent changelog right from the active target file!
 
-Use your **Up/Down Arrow keys** and **Enter** to navigate. 
+Use your **Up/Down Arrow keys** and **Enter** to navigate the categorized menu.
 
 ### 1. Upload Mod
-Automatically detects your local ZIP files (processing Windows, then Android, and finally Server), prompts you for an optional changelog, and confidently uploads everything to Mod.io while you go pet your cat.
+Automatically detects your local ZIP files (processing Windows, then Android, and finally Server), prompts you for an optional changelog, and confidently uploads everything to Mod.io via multipart upload.
 
 ### 2. Rollback / Update Metadata Only
-If an upload breaks things, use this to fetch your past releases directly from Mod.io. Select an older, stable version from the list to revert your mod and get your players back up and running quickly. The rollback process intelligently hides files you have already selected and prompts you for the Windows PC version first, then Android, and finally Server.
+If an upload breaks things, use this to fetch your past releases directly from Mod.io. Select an older, stable version from the list to revert your mod. The rollback process filters and intelligently hides files you have already selected across platforms.
 
-### 3. Change Target Mod.io Mod
-Instead of manually opening `config.json` every time you want to switch projects, select this option to fetch all the mods you own dynamically from the Mod.io server. When you choose a mod from the interactive list, the utility instantly switches its context, caching your new target into the configuration for you.
+### 3. Switch Mod
+Instead of manually opening `config.json` every time you want to switch projects, select this option to fetch a list of all your mods dynamically, sorted by most recently updated. You can immediately start typing to **fuzzy-filter** the list to find the exact mod you're looking for. Hit `Enter` to switch contexts instantly.
+
+### 4. Create Mod
+Create a brand new mod right from the CLI. 
+* It uses the **first `.png` file** in the script's folder as the mandatory Mod.io logo.
+* Prompts for the `Name` and `Summary`.
+* Offers an interactive multi-select menu (using `SPACE` to toggle and `ENTER` to submit) to assign tags (`Loadout`, `Windows`, `Android`, `Server`).
+* Formats the new mod correctly with the exact hidden metadata structure required by the game developers, guaranteeing the mod will be recognized in-game.
+
+### 5. Edit Mod
+Update your target mod's details actively without going to the Mod.io website.
+* Allows inline editing of the **Name** and **Summary**.
+* Opens the multi-select TUI to explicitly update **Tags**.
+* Integrates a **Logo Update** option, grabbing the current `.png` in your folder and overwriting the live logo instantly.
+
+### 6. Open in Mod.io
+Need to check the mod page? This option extracts the profile URL right from the API and opens it in your default web browser instantly.

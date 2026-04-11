@@ -1,5 +1,5 @@
 {
-    "apiToken":  "apiToken",
+    "apiToken":  "{your-oauth-token}",
     "gameId":  "251",
-    "modId":  "4192849"
+    "modId":  "{your-mod-id} (can be left empty)"
 }

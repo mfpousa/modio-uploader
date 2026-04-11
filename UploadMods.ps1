@@ -451,11 +451,17 @@ function Show-TuiMenu {
         # Wait for input
         $key = [Console]::ReadKey($true)
         if ($key.Key -eq 'UpArrow') {
-            $selectedIndex = ($selectedIndex - 1 + $Options.Count) % $Options.Count
+            do {
+                $selectedIndex = ($selectedIndex - 1 + $Options.Count) % $Options.Count
+            } while ($Options[$selectedIndex].StartsWith("---") -or [string]::IsNullOrWhiteSpace($Options[$selectedIndex]))
         } elseif ($key.Key -eq 'DownArrow') {
-            $selectedIndex = ($selectedIndex + 1) % $Options.Count
+            do {
+                $selectedIndex = ($selectedIndex + 1) % $Options.Count
+            } while ($Options[$selectedIndex].StartsWith("---") -or [string]::IsNullOrWhiteSpace($Options[$selectedIndex]))
         } elseif ($key.Key -eq 'Enter') {
-            break
+            if (-not ($Options[$selectedIndex].StartsWith("---") -or [string]::IsNullOrWhiteSpace($Options[$selectedIndex]))) {
+                break
+            }
         } elseif ($key.Key -eq 'Escape') {
             $selectedIndex = -1
             break
@@ -466,6 +472,161 @@ function Show-TuiMenu {
     Clear-Host
     
     return [string]($selectedIndex + 1)
+}
+
+function Show-TuiMultiSelect {
+    param (
+        [string]$Title,
+        [string]$Subtitle,
+        [string[]]$Options,
+        [string[]]$Preselected = @()
+    )
+    $selectedIndex = 0
+    $selectedStates = @($false) * $Options.Count
+    for ($i = 0; $i -lt $Options.Count; $i++) {
+        if ($Preselected -contains $Options[$i]) {
+            $selectedStates[$i] = $true
+        }
+    }
+    
+    try { [Console]::CursorVisible = $false } catch {}
+    Clear-Host
+
+    while ($true) {
+        $winWidth = if ([Console]::WindowWidth -gt 10) { [Console]::WindowWidth } else { 80 }
+        $winHeight = if ([Console]::WindowHeight -gt 10) { [Console]::WindowHeight } else { 24 }
+        $maxLen = $winWidth - 1
+
+        $headerText = @()
+        $headerText += "=========================================".PadRight($maxLen, ' ').Substring(0, [math]::Min(41, $maxLen))
+        $headerText += "  $Title".PadRight($maxLen, ' ').Substring(0, [math]::Min("  $Title".Length, $maxLen))
+        $headerText += "=========================================".PadRight($maxLen, ' ').Substring(0, [math]::Min(41, $maxLen))
+        $headerText += "".PadRight($maxLen, ' ')
+
+        if (-not [string]::IsNullOrWhiteSpace($Subtitle)) {
+            $subLines = ($Subtitle -replace "`r", "") -split "`n"
+            foreach ($sl in $subLines) {
+                if ($sl.Length -gt $maxLen) { $headerText += $sl.Substring(0, $maxLen) }
+                else { $headerText += $sl.PadRight($maxLen, ' ') }
+            }
+            $headerText += "".PadRight($maxLen, ' ')
+        }
+        
+        $headerLinesCount = $headerText.Count
+        $maxMenuLines = $winHeight - $headerLinesCount - 3
+        if ($maxMenuLines -lt 5) { $maxMenuLines = 5 }
+
+        $ParsedOptions = @()
+        foreach ($i in 0..($Options.Count - 1)) {
+            $opt = $Options[$i]
+            $check = if ($selectedStates[$i]) { "[X]" } else { "[ ]" }
+            $optText = "$check $opt"
+
+            $optLines = @()
+            $rawLines = ($optText -replace "`r", "") -split "`n"
+            foreach ($rl in $rawLines) {
+                if ($rl.Length -eq 0) {
+                    $optLines += ""
+                } else {
+                    $readIdx = 0
+                    while ($readIdx -lt $rl.Length) {
+                        $chunkLen = [math]::Min($maxLen - 4, $rl.Length - $readIdx)
+                        $optLines += $rl.Substring($readIdx, $chunkLen)
+                        $readIdx += $chunkLen
+                    }
+                }
+            }
+            $ParsedOptions += ,$optLines
+        }
+
+        $startIdx = $selectedIndex
+        $endIdx = $selectedIndex
+        $currentLines = $ParsedOptions[$selectedIndex].Count
+
+        while ($startIdx -gt 0 -or $endIdx -lt ($Options.Count - 1)) {
+            $canExpand = $false
+            if ($startIdx -gt 0) {
+                $linesNeeded = $ParsedOptions[$startIdx - 1].Count
+                if ($currentLines + $linesNeeded -le $maxMenuLines) {
+                    $startIdx--
+                    $currentLines += $linesNeeded
+                    $canExpand = $true
+                }
+            }
+            if ($endIdx -lt ($Options.Count - 1)) {
+                $linesNeeded = $ParsedOptions[$endIdx + 1].Count
+                if ($currentLines + $linesNeeded -le $maxMenuLines) {
+                    $endIdx++
+                    $currentLines += $linesNeeded
+                    $canExpand = $true
+                }
+            }
+            if (-not $canExpand) { break }
+        }
+
+        try { [Console]::SetCursorPosition(0, 0) } catch {}
+        
+        Write-Host $headerText[0] -ForegroundColor Magenta
+        Write-Host $headerText[1] -ForegroundColor White -BackgroundColor DarkMagenta
+        Write-Host $headerText[2] -ForegroundColor Magenta
+        for ($i = 3; $i -lt $headerText.Count; $i++) {
+            Write-Host $headerText[$i] -ForegroundColor DarkCyan
+        }
+
+        $linesDrawnThisFrame = 0
+        for ($i = $startIdx; $i -le $endIdx; $i++) {
+            $lines = $ParsedOptions[$i]
+            $isSel = ($i -eq $selectedIndex)
+            
+            for ($L = 0; $L -lt $lines.Count; $L++) {
+                $pfx = if ($L -eq 0) { if ($isSel) { "  > " } else { "    " } } else { "    " }
+                $str = "$pfx$($lines[$L])".PadRight($maxLen, ' ')
+                
+                if ($isSel) {
+                    Write-Host $str -ForegroundColor Black -BackgroundColor Cyan
+                } else {
+                    $itemColor = if ($selectedStates[$i]) { [ConsoleColor]::Green } else { [ConsoleColor]::Gray }
+                    Write-Host $str -ForegroundColor $itemColor -BackgroundColor Black
+                }
+                $linesDrawnThisFrame++
+            }
+        }
+
+        $blankStr = "".PadRight($maxLen, ' ')
+        $totalDrawn = $headerLinesCount + $linesDrawnThisFrame
+        $linesToClear = $winHeight - $totalDrawn - 1
+        if ($linesToClear -gt 0) {
+            for ($c = 0; $c -lt $linesToClear; $c++) {
+                Write-Host $blankStr
+            }
+        }
+
+        $key = [Console]::ReadKey($true)
+        if ($key.Key -eq 'UpArrow') {
+            $selectedIndex = ($selectedIndex - 1 + $Options.Count) % $Options.Count
+        } elseif ($key.Key -eq 'DownArrow') {
+            $selectedIndex = ($selectedIndex + 1) % $Options.Count
+        } elseif ($key.Key -eq 'Spacebar') {
+            $selectedStates[$selectedIndex] = -not $selectedStates[$selectedIndex]
+        } elseif ($key.Key -eq 'Enter') {
+            break
+        } elseif ($key.Key -eq 'Escape') {
+            $selectedStates = @($false) * $Options.Count
+            break
+        }
+    }
+
+    try { [Console]::CursorVisible = $true } catch {}
+    Clear-Host
+    
+    $selectedResults = @()
+    for ($i = 0; $i -lt $Options.Count; $i++) {
+        if ($selectedStates[$i]) {
+            $selectedResults += $Options[$i]
+        }
+    }
+    
+    return $selectedResults
 }
 
 function Get-ZipBySuffix($Suffix) {
@@ -493,6 +654,70 @@ function Resolve-PluginDataWithConfig {
     }
 }
 
+function New-ModIoMod {
+    param (
+        [string]$Name,
+        [string]$Summary,
+        [string[]]$Tags,
+        [string]$LogoPath
+    )
+
+    Write-Host "`n--- Creating New Mod on Mod.io ---" -ForegroundColor Cyan
+
+    $Boundary = "----WebKitFormBoundary$([System.Guid]::NewGuid().ToString('N'))"
+    $MultipartBody = ""
+
+    # Attach required logo first
+    $LogoBytes = [System.IO.File]::ReadAllBytes($LogoPath)
+    $LogoContent = [System.Text.Encoding]::GetEncoding("iso-8859-1").GetString($LogoBytes)
+
+    $MultipartBody += "--$Boundary`r`n"
+    $MultipartBody += "Content-Disposition: form-data; name=`"logo`"; filename=`"$([System.IO.Path]::GetFileName($LogoPath))`"`r`n"
+    $MultipartBody += "Content-Type: image/png`r`n`r`n"
+    $MultipartBody += "$LogoContent`r`n"
+
+    $Fields = @{
+        "name" = $Name
+        "summary" = $Summary
+        "visible" = "1"
+        "metadata_blob" = "{ `"serverFileId`": `"`", `"windowsFileId`": `"`", `"androidFileId`": `"`" }"
+    }
+
+    foreach ($Key in $Fields.Keys) {
+        $MultipartBody += "--$Boundary`r`n"
+        $MultipartBody += "Content-Disposition: form-data; name=`"$Key`"`r`n`r`n"
+        $MultipartBody += "$($Fields[$Key])`r`n"
+    }
+
+    foreach ($Tag in $Tags) {
+        $MultipartBody += "--$Boundary`r`n"
+        $MultipartBody += "Content-Disposition: form-data; name=`"tags[]`"`r`n`r`n"
+        $MultipartBody += "$Tag`r`n"
+    }
+
+    $MultipartBody += "--$Boundary--`r`n"
+
+    try {
+        # Using iso-8859-1 encoding ensures raw byte values are maintained through the string conversion
+        $Bytes = [System.Text.Encoding]::GetEncoding("iso-8859-1").GetBytes($MultipartBody)
+        $CreateResponse = Invoke-RestMethod -Uri "https://api.mod.io/v1/games/$GameId/mods" -Method Post -Headers $Headers -Body $Bytes -ContentType "multipart/form-data; boundary=$Boundary"
+        
+        Write-Host "Mod successfully created! ID: $($CreateResponse.id)" -ForegroundColor Green
+        return [string]$CreateResponse.id
+    } catch {
+        Write-Host "Failed to create mod: $($_.Exception.Message)" -ForegroundColor Red
+        if ($null -ne $_.Exception.Response) {
+            try {
+                $errStream = $_.Exception.Response.GetResponseStream()
+                $errReader = New-Object System.IO.StreamReader($errStream)
+                Write-Host "Verbose error: $($errReader.ReadToEnd())" -ForegroundColor DarkRed
+                $errReader.Close()
+            } catch {}
+        }
+        return $null
+    }
+}
+
 # --- Main Menu UI ---
 while ($true) {
     Clear-Host
@@ -513,7 +738,25 @@ while ($true) {
                 $svId = if (-not [string]::IsNullOrWhiteSpace($ParsedData.serverFileId)) { $ParsedData.serverFileId } else { "None" }
                 $pcId = if (-not [string]::IsNullOrWhiteSpace($ParsedData.windowsFileId)) { $ParsedData.windowsFileId } else { "None" }
                 $anId = if (-not [string]::IsNullOrWhiteSpace($ParsedData.androidFileId)) { $ParsedData.androidFileId } else { "None" }
-                $HeadsUp += "Live Files : Win ($pcId) | Andr ($anId) | Svr ($svId)`n"
+                
+                $ValidIds = @($pcId, $anId, $svId) | Where-Object { $_ -ne "None" -and -not [string]::IsNullOrWhiteSpace($_) }
+                $FileCache = @{}
+                if ($ValidIds.Count -gt 0) {
+                    $idStr = $ValidIds -join ','
+                    $LiveFilesRes = try { Invoke-RestMethod -Uri "$BaseUrl/files?id-in=$idStr" -Method Get -Headers $Headers } catch { $null }
+                    if ($null -ne $LiveFilesRes -and $null -ne $LiveFilesRes.data) {
+                        foreach ($f in $LiveFilesRes.data) { $FileCache[[string]$f.id] = $f.filename }
+                    }
+                }
+
+                $pcName = if ($pcId -ne "None" -and $FileCache.ContainsKey($pcId)) { $FileCache[$pcId] } elseif ($pcId -ne "None") { "Unknown" } else { "None" }
+                $anName = if ($anId -ne "None" -and $FileCache.ContainsKey($anId)) { $FileCache[$anId] } elseif ($anId -ne "None") { "Unknown" } else { "None" }
+                $svName = if ($svId -ne "None" -and $FileCache.ContainsKey($svId)) { $FileCache[$svId] } elseif ($svId -ne "None") { "Unknown" } else { "None" }
+
+                $HeadsUp += "Live Files :`n"
+                $HeadsUp += "        Win : $pcName ($pcId)`n"
+                $HeadsUp += "        And : $anName ($anId)`n"
+                $HeadsUp += "        Svr : $svName ($svId)`n"
                 
                 if ($pcId -ne "None") { $TargetFileId = $pcId }
                 elseif ($svId -ne "None") { $TargetFileId = $svId }
@@ -549,13 +792,18 @@ while ($true) {
     $MenuOptions = @(
         "Upload Mod (Uploads Windows, Android, Server ZIPs)",
         "Rollback / Update Metadata Only (View past releases & restore)",
-        "Change Target Mod.io Mod",
+        "",
+        "Switch Mod",
+        "Create Mod",
+        "Edit Mod",
+        "Open in Mod.io",
+        "",
         "Exit"
     )
 
     $Choice = Show-TuiMenu -Title $MenuTitle -Subtitle $MenuSubtitle -Options $MenuOptions
 
-    if ($Choice -eq "4" -or $Choice -eq "0") {
+    if ($Choice -eq "9" -or $Choice -eq "0") {
         Write-Host "Exiting." -ForegroundColor Cyan
         exit 0
     }
@@ -876,32 +1124,143 @@ if ($Choice -eq "1") {
             Update-ModMetadata -ServerFileId $SelServerId -WindowsFileId $SelWindowsId -AndroidFileId $SelAndroidId -PluginRoot $PluginRootVal -ModDataPaths $ModDataPathsVal
         }
     }
-} elseif ($Choice -eq "3") {
+} elseif ($Choice -eq "4") {
     Write-Host "`nFetching your mods from Mod.io..." -ForegroundColor Cyan
     $MyModsRes = try {
-        Invoke-RestMethod -Uri "https://api.mod.io/v1/me/mods?game_id=$GameId" -Method Get -Headers $Headers
+        Invoke-RestMethod -Uri "https://api.mod.io/v1/me/mods?game_id=$GameId&_sort=-date_updated&_limit=100" -Method Get -Headers $Headers
     } catch {
         Write-Host "Failed to fetch your mods: $($_.Exception.Message)" -ForegroundColor Red
         $null
     }
 
     if ($null -ne $MyModsRes -and $null -ne $MyModsRes.data -and $MyModsRes.data.Count -gt 0) {
-        $ModOpts = @("Cancel")
-        $ModObjs = @()
-        foreach ($m in $MyModsRes.data) {
-            $ModOpts += "[$($m.id)] $($m.name)"
-            $ModObjs += $m
+        $ModObjs = $MyModsRes.data
+
+        $FilterStr = ""
+        $SelectedIndex = 0
+        $Cancelled = $false
+        $ConfirmedIndex = -1
+
+        try { [Console]::CursorVisible = $false } catch {}
+        Clear-Host
+
+        while ($true) {
+            $winWidth = if ([Console]::WindowWidth -gt 10) { [Console]::WindowWidth } else { 80 }
+            $winHeight = if ([Console]::WindowHeight -gt 10) { [Console]::WindowHeight } else { 24 }
+            
+            # Fuzzy filter logic
+            $FilteredIndices = @()
+            if ([string]::IsNullOrWhiteSpace($FilterStr)) {
+                for ($i=0; $i -lt $ModObjs.Count; $i++) { $FilteredIndices += $i }
+            } else {
+                $SearchPattern = ($FilterStr.ToCharArray() | foreach { [regex]::Escape($_) }) -join '.*'
+                for ($i=0; $i -lt $ModObjs.Count; $i++) {
+                    if ($ModObjs[$i].name -match "(?i)$SearchPattern") {
+                        $FilteredIndices += $i
+                    }
+                }
+            }
+
+            if ($SelectedIndex -ge $FilteredIndices.Count) { $SelectedIndex = [math]::Max(0, $FilteredIndices.Count - 1) }
+
+            $headerText = @(
+                "=========================================",
+                "  Select Target Mod",
+                "=========================================",
+                "Select the mod you want to manage. ModId will be saved to config.json.",
+                "Start typing to filter. Up/Down to select. Enter to confirm. Esc to cancel.",
+                "-----------------------------------------",
+                "Filter: $(if($FilterStr){$FilterStr}else{'<type to search>'})",
+                "-----------------------------------------"
+            )
+
+            try { [Console]::SetCursorPosition(0, 0) } catch {}
+
+            foreach ($i in 0..7) {
+                if ($headerText[$i].Length -ge ($winWidth-1)) {
+                    $headerText[$i] = $headerText[$i].Substring(0, $winWidth-1)
+                } else {
+                    $headerText[$i] = $headerText[$i].PadRight($winWidth-1, ' ')
+                }
+            }
+
+            Write-Host $headerText[0] -ForegroundColor Magenta
+            Write-Host $headerText[1] -ForegroundColor White -BackgroundColor DarkMagenta
+            Write-Host $headerText[2] -ForegroundColor Magenta
+            Write-Host $headerText[3] -ForegroundColor DarkCyan
+            Write-Host $headerText[4] -ForegroundColor DarkCyan
+            Write-Host $headerText[5] -ForegroundColor DarkGray
+            Write-Host $headerText[6] -ForegroundColor Yellow
+            Write-Host $headerText[7] -ForegroundColor DarkGray
+
+            $linesDrawn = 0
+            $maxMenuLines = $winHeight - $headerText.Count - 2
+            
+            if ($FilteredIndices.Count -eq 0) {
+                Write-Host "  (No matches found)".PadRight($winWidth-1, ' ') -ForegroundColor Red
+                $linesDrawn++
+            } else {
+                $startIdx = 0
+                if ($SelectedIndex -ge $maxMenuLines) {
+                    $startIdx = $SelectedIndex - $maxMenuLines + 1
+                }
+                $endIdx = [math]::Min($startIdx + $maxMenuLines - 1, $FilteredIndices.Count - 1)
+
+                for ($i = $startIdx; $i -le $endIdx; $i++) {
+                    $mIdx = $FilteredIndices[$i]
+                    $m = $ModObjs[$mIdx]
+                    
+                    $dispStr = "[$($m.id)] $($m.name)"
+                    $pfx = if ($i -eq $SelectedIndex) { "  > " } else { "    " }
+                    $str = "$pfx$dispStr".PadRight($winWidth-1, ' ')
+
+                    if ($i -eq $SelectedIndex) {
+                        Write-Host $str -ForegroundColor Black -BackgroundColor Cyan
+                    } else {
+                        Write-Host $str -ForegroundColor Gray -BackgroundColor Black
+                    }
+                    $linesDrawn++
+                }
+            }
+
+            $blankStr = "".PadRight($winWidth-1, ' ')
+            $linesToClear = $winHeight - $headerText.Count - $linesDrawn - 1
+            if ($linesToClear -gt 0) {
+                for ($c = 0; $c -lt $linesToClear; $c++) { Write-Host $blankStr }
+            }
+
+            $key = [Console]::ReadKey($true)
+            if ($key.Key -eq 'Escape') {
+                $Cancelled = $true
+                break
+            } elseif ($key.Key -eq 'Enter') {
+                if ($FilteredIndices.Count -gt 0) {
+                    $ConfirmedIndex = $FilteredIndices[$SelectedIndex]
+                } else {
+                    $Cancelled = $true
+                }
+                break
+            } elseif ($key.Key -eq 'UpArrow') {
+                $SelectedIndex = ($SelectedIndex - 1 + [math]::Max(1, $FilteredIndices.Count)) % [math]::Max(1, $FilteredIndices.Count)
+            } elseif ($key.Key -eq 'DownArrow') {
+                $SelectedIndex = ($SelectedIndex + 1) % [math]::Max(1, $FilteredIndices.Count)
+            } elseif ($key.Key -eq 'Backspace') {
+                if ($FilterStr.Length -gt 0) {
+                    $FilterStr = $FilterStr.Substring(0, $FilterStr.Length - 1)
+                }
+            } elseif (-not [char]::IsControl($key.KeyChar)) {
+                $FilterStr += $key.KeyChar
+            }
         }
 
-        $ModSub = "Select the mod you want to manage. ModId will be saved to config.json."
-        $ModChoice = Show-TuiMenu -Title "Select Target Mod" -Subtitle $ModSub -Options $ModOpts
-        
-        if ($ModChoice -ne "0" -and $ModChoice -ne "1") {
-            $SelectedMod = $ModObjs[[int]$ModChoice - 2]
+        try { [Console]::CursorVisible = $true } catch {}
+        Clear-Host
+
+        if (-not $Cancelled -and $ConfirmedIndex -ge 0) {
+            $SelectedMod = $ModObjs[$ConfirmedIndex]
             $Config.modId = [string]$SelectedMod.id
             $Config | ConvertTo-Json -Depth 10 | Set-Content $ConfigPath
             
-            # Update local script variables so it reflects immediately
             $ModId = $Config.modId
             $BaseUrl = "https://api.mod.io/v1/games/$GameId/mods/$ModId"
             
@@ -911,6 +1270,179 @@ if ($Choice -eq "1") {
         }
     } else {
         Write-Host "No mods found for this game, or failed to fetch." -ForegroundColor Yellow
+    }
+} elseif ($Choice -eq "5") {
+    Write-Host "`n--- Interactive Mod Creation ---" -ForegroundColor Cyan
+    $NewModName = Read-Host "Enter the Name for the new mod"
+    $NewModSummary = Read-Host "Enter a short Summary for the new mod"
+
+    if ([string]::IsNullOrWhiteSpace($NewModName) -or [string]::IsNullOrWhiteSpace($NewModSummary)) {
+        Write-Host "Name and Summary are required. Aborting mod creation." -ForegroundColor Red
+        Write-Host "`nPress any key to return to main menu..." -ForegroundColor Cyan
+        [Console]::ReadKey($true) | Out-Null
+        continue
+    }
+
+    $AvailableTags = @("Loadout", "Windows", "Android", "Server")
+    $TagSelectionSubtitle = "Select tags for the new mod.`nUse Up/Down Arrows to navigate.`nPress SPACE to toggle selection.`nPress ENTER to submit."
+    $SelectedTags = Show-TuiMultiSelect -Title "Select Mod Tags" -Subtitle $TagSelectionSubtitle -Options $AvailableTags
+
+    $LogoFile = Get-ChildItem -Path $PSScriptRoot -Filter "*.png" | Select-Object -First 1
+    if (-not $LogoFile) {
+        Write-Host "Error: No .png file found in the current directory to use as a logo. A logo is required by Mod.io." -ForegroundColor Red
+        Write-Host "`nPress any key to return to main menu..." -ForegroundColor Cyan
+        [Console]::ReadKey($true) | Out-Null
+        continue
+    }
+
+    $NewModId = New-ModIoMod -Name $NewModName -Summary $NewModSummary -Tags $SelectedTags -LogoPath $LogoFile.FullName
+
+    if ($null -ne $NewModId) {
+        $Config.modId = $NewModId
+        $Config | ConvertTo-Json -Depth 10 | Set-Content $ConfigPath
+        
+        $ModId = $Config.modId
+        $BaseUrl = "https://api.mod.io/v1/games/$GameId/mods/$ModId"
+        
+        Write-Host "Target mode mapped to brand new mod successfully." -ForegroundColor Green
+    }
+} elseif ($Choice -eq "6") {
+    while ($true) {
+        Write-Host "`nFetching current mod details..." -ForegroundColor Cyan
+        $CurrentModInfo = try { Invoke-RestMethod -Uri $BaseUrl -Method Get -Headers $Headers } catch { $null }
+        
+        if ($null -eq $CurrentModInfo) {
+            Write-Host "Failed to fetch mod info. Ensure the Target Mod exists." -ForegroundColor Red
+            Write-Host "Press any key to return..." -ForegroundColor Cyan
+            [Console]::ReadKey($true) | Out-Null
+            break
+        }
+        
+        $CurrentTagsObj = $CurrentModInfo.tags | Sort-Object name
+        $CurrentTagsStr = if ($null -ne $CurrentTagsObj -and $CurrentTagsObj.Count -gt 0) { ($CurrentTagsObj.name -join ', ') } else { "None" }
+
+        $EditOpts = @(
+            "Name    : $($CurrentModInfo.name)",
+            "Summary : $($CurrentModInfo.summary)",
+            "Tags    : $CurrentTagsStr",
+            "Logo    : Update from first .png in folder",
+            "Go Back"
+        )
+        
+        $EditSub = "Editing Mod ID: $ModId`nUse Up/Down Arrows to navigate. Press Enter to select."
+        $EditChoice = Show-TuiMenu -Title "Edit Mod Details" -Subtitle $EditSub -Options $EditOpts
+        
+        if ($EditChoice -eq "5" -or $EditChoice -eq "0") {
+            break
+        }
+
+        if ($EditChoice -eq "1") {
+            Write-Host "`n--- Edit Name ---" -ForegroundColor Cyan
+            $NewName = Read-Host "Enter new Name (leave blank to cancel)"
+            if (-not [string]::IsNullOrWhiteSpace($NewName)) {
+                try {
+                    $BodyData = "name=$([uri]::EscapeDataString($NewName))"
+                    Invoke-RestMethod -Uri $BaseUrl -Method Put -Headers $Headers -Body $BodyData -ContentType "application/x-www-form-urlencoded" | Out-Null
+                    Write-Host "Name updated successfully!" -ForegroundColor Green
+                    Start-Sleep -Seconds 1
+                } catch { Write-Host "Failed to update Name: $($_.Exception.Message)" -ForegroundColor Red; Start-Sleep -Seconds 2 }
+            }
+        } elseif ($EditChoice -eq "2") {
+            Write-Host "`n--- Edit Summary ---" -ForegroundColor Cyan
+            $NewSummary = Read-Host "Enter new Summary (leave blank to cancel)"
+            if (-not [string]::IsNullOrWhiteSpace($NewSummary)) {
+                try {
+                    $BodyData = "summary=$([uri]::EscapeDataString($NewSummary))"
+                    Invoke-RestMethod -Uri $BaseUrl -Method Put -Headers $Headers -Body $BodyData -ContentType "application/x-www-form-urlencoded" | Out-Null
+                    Write-Host "Summary updated successfully!" -ForegroundColor Green
+                    Start-Sleep -Seconds 1
+                } catch { Write-Host "Failed to update Summary: $($_.Exception.Message)" -ForegroundColor Red; Start-Sleep -Seconds 2 }
+            }
+        } elseif ($EditChoice -eq "3") {
+            $AvailableTags = @("Loadout", "Windows", "Android", "Server")
+            $TagSelectionSubtitle = "Select tags for the mod.`nUse Up/Down Arrows to navigate.`nPress SPACE to toggle selection.`nPress ENTER to submit."
+            $ExistingTagsArr = if ($null -ne $CurrentTagsObj) { @($CurrentTagsObj.name) } else { @() }
+            
+            $SelectedTags = Show-TuiMultiSelect -Title "Edit Mod Tags" -Subtitle $TagSelectionSubtitle -Options $AvailableTags -Preselected $ExistingTagsArr
+            
+            Write-Host "`nUpdating tags..." -ForegroundColor Cyan
+            try {
+                $PutBody = @()
+                foreach ($t in $SelectedTags) { $PutBody += "tags[]=$([uri]::EscapeDataString($t))" }
+                
+                if ($PutBody.Count -gt 0) {
+                    # Overwrite all tags using the PUT endpoint directly on the mod
+                    Invoke-RestMethod -Uri $BaseUrl -Method Put -Headers $Headers -Body ($PutBody -join '&') -ContentType "application/x-www-form-urlencoded" | Out-Null
+                } else {
+                    # Wiping all tags requires DELETE. We pass via query string to avoid WAF 403 Forbidden errors on DELETE bodies
+                    if ($ExistingTagsArr.Count -gt 0) {
+                        $DelQuery = @()
+                        foreach ($t in $ExistingTagsArr) { $DelQuery += "tags[]=$([uri]::EscapeDataString($t))" }
+                        $DelUri = "$BaseUrl/tags?" + ($DelQuery -join '&')
+                        Invoke-RestMethod -Uri $DelUri -Method Delete -Headers $Headers | Out-Null
+                    }
+                }
+                Write-Host "Tags updated successfully!" -ForegroundColor Green
+                Start-Sleep -Seconds 1
+            } catch {
+                Write-Host "Failed to update tags: $($_.Exception.Message)" -ForegroundColor Red
+                if ($null -ne $_.Exception.Response) {
+                    try {
+                        $errStream = $_.Exception.Response.GetResponseStream()
+                        $errReader = New-Object System.IO.StreamReader($errStream)
+                        Write-Host "Server details: $($errReader.ReadToEnd())" -ForegroundColor DarkRed
+                        $errReader.Close()
+                    } catch {}
+                }
+                Start-Sleep -Seconds 3
+            }
+        } elseif ($EditChoice -eq "4") {
+            $LogoFile = Get-ChildItem -Path $PSScriptRoot -Filter "*.png" | Select-Object -First 1
+            if (-not $LogoFile) {
+                Write-Host "Error: No .png file found in the current directory." -ForegroundColor Red
+                Start-Sleep -Seconds 2
+            } else {
+                Write-Host "`nUpdating Logo using: $($LogoFile.Name) ..." -ForegroundColor Cyan
+                
+                $Boundary = "----WebKitFormBoundary$([System.Guid]::NewGuid().ToString('N'))"
+                $MultipartBody = ""
+
+                $LogoBytes = [System.IO.File]::ReadAllBytes($LogoFile.FullName)
+                $LogoContent = [System.Text.Encoding]::GetEncoding("iso-8859-1").GetString($LogoBytes)
+
+                $MultipartBody += "--$Boundary`r`n"
+                $MultipartBody += "Content-Disposition: form-data; name=`"logo`"; filename=`"$($LogoFile.Name)`"`r`n"
+                $MultipartBody += "Content-Type: image/png`r`n`r`n"
+                $MultipartBody += "$LogoContent`r`n"
+                $MultipartBody += "--$Boundary--`r`n"
+
+                try {
+                    $Bytes = [System.Text.Encoding]::GetEncoding("iso-8859-1").GetBytes($MultipartBody)
+                    Invoke-RestMethod -Uri "$BaseUrl/media" -Method Post -Headers $Headers -Body $Bytes -ContentType "multipart/form-data; boundary=$Boundary" | Out-Null
+                    Write-Host "Logo updated successfully!" -ForegroundColor Green
+                    Start-Sleep -Seconds 2
+                } catch {
+                    Write-Host "Failed to update logo: $($_.Exception.Message)" -ForegroundColor Red
+                    if ($null -ne $_.Exception.Response) {
+                        try {
+                            $errStream = $_.Exception.Response.GetResponseStream()
+                            $errReader = New-Object System.IO.StreamReader($errStream)
+                            Write-Host "Server details: $($errReader.ReadToEnd())" -ForegroundColor DarkRed
+                            $errReader.Close()
+                        } catch {}
+                    }
+                    Start-Sleep -Seconds 3
+                }
+            }
+        }
+    }
+} elseif ($Choice -eq "7") {
+    if ($null -ne $ModInfo -and -not [string]::IsNullOrWhiteSpace($ModInfo.profile_url)) {
+        Write-Host "Opening $($ModInfo.profile_url) in your default browser..." -ForegroundColor Cyan
+        Start-Process $ModInfo.profile_url
+    } else {
+        Write-Host "Mod URL not found. Ensure the Target Mod is valid." -ForegroundColor Red
+        Start-Sleep -Seconds 2
     }
 } else {
     Write-Host "Invalid selection. Going back to main menu." -ForegroundColor Red
