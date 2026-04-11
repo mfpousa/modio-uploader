@@ -414,8 +414,29 @@ function Show-TuiMenu {
         Write-Host $headerText[0] -ForegroundColor Magenta
         Write-Host $headerText[1] -ForegroundColor White -BackgroundColor DarkMagenta
         Write-Host $headerText[2] -ForegroundColor Magenta
+        $isHudBlock = $false
         for ($i = 3; $i -lt $headerText.Count; $i++) {
-            Write-Host $headerText[$i] -ForegroundColor DarkCyan
+            $line = $headerText[$i]
+            if ($line -match "^\s*Use Up/Down Arrows" -or $line -match "^\s*Press Enter" -or $line.Trim().Length -eq 0) {
+                $isHudBlock = $false
+                Write-Host $line -ForegroundColor DarkCyan
+            } elseif ($line -match "^(Target Mod\s*:\s*)(.*)") {
+                $isHudBlock = $true
+                $matchLabel = $matches[1]
+                $matchValueOriginal = $matches[2]
+                $matchValue = $matchValueOriginal.TrimEnd()
+                $pads = $matchValueOriginal.Substring($matchValue.Length)
+                Write-Host $matchLabel -NoNewline -ForegroundColor Yellow
+                Write-Host $matchValue -NoNewline -ForegroundColor Black -BackgroundColor Yellow
+                Write-Host $pads
+            } elseif ($line -match "(Updated|Live Files|Win|And|Svr|Changelog)\s*:|ID:") {
+                $isHudBlock = $true
+                Write-Host $line -ForegroundColor Yellow
+            } elseif ($isHudBlock) {
+                Write-Host $line -ForegroundColor Yellow
+            } else {
+                Write-Host $line -ForegroundColor DarkCyan
+            }
         }
 
         # 2. Paint Options
@@ -569,8 +590,29 @@ function Show-TuiMultiSelect {
         Write-Host $headerText[0] -ForegroundColor Magenta
         Write-Host $headerText[1] -ForegroundColor White -BackgroundColor DarkMagenta
         Write-Host $headerText[2] -ForegroundColor Magenta
+        $isHudBlock = $false
         for ($i = 3; $i -lt $headerText.Count; $i++) {
-            Write-Host $headerText[$i] -ForegroundColor DarkCyan
+            $line = $headerText[$i]
+            if ($line -match "^\s*Use Up/Down Arrows" -or $line -match "^\s*Press SPACE" -or $line -match "^\s*Press ENTER" -or $line.Trim().Length -eq 0) {
+                $isHudBlock = $false
+                Write-Host $line -ForegroundColor DarkCyan
+            } elseif ($line -match "^(Target Mod\s*:\s*)(.*)") {
+                $isHudBlock = $true
+                $matchLabel = $matches[1]
+                $matchValueOriginal = $matches[2]
+                $matchValue = $matchValueOriginal.TrimEnd()
+                $pads = $matchValueOriginal.Substring($matchValue.Length)
+                Write-Host $matchLabel -NoNewline -ForegroundColor Yellow
+                Write-Host $matchValue -NoNewline -ForegroundColor Black -BackgroundColor Yellow
+                Write-Host $pads
+            } elseif ($line -match "(Updated|Live Files|Win|And|Svr|Changelog)\s*:|ID:") {
+                $isHudBlock = $true
+                Write-Host $line -ForegroundColor Yellow
+            } elseif ($isHudBlock) {
+                Write-Host $line -ForegroundColor Yellow
+            } else {
+                Write-Host $line -ForegroundColor DarkCyan
+            }
         }
 
         $linesDrawnThisFrame = 0
@@ -1283,7 +1325,7 @@ if ($Choice -eq "1") {
         continue
     }
 
-    $AvailableTags = @("Loadout", "Windows", "Android", "Server")
+    $AvailableTags = @("Loadout", "Windows", "Android", "Server", "Map", "CustomMode")
     $TagSelectionSubtitle = "Select tags for the new mod.`nUse Up/Down Arrows to navigate.`nPress SPACE to toggle selection.`nPress ENTER to submit."
     $SelectedTags = Show-TuiMultiSelect -Title "Select Mod Tags" -Subtitle $TagSelectionSubtitle -Options $AvailableTags
 
@@ -1359,7 +1401,7 @@ if ($Choice -eq "1") {
                 } catch { Write-Host "Failed to update Summary: $($_.Exception.Message)" -ForegroundColor Red; Start-Sleep -Seconds 2 }
             }
         } elseif ($EditChoice -eq "3") {
-            $AvailableTags = @("Loadout", "Windows", "Android", "Server")
+            $AvailableTags = @("Loadout", "Windows", "Android", "Server", "Map", "CustomMode")
             $TagSelectionSubtitle = "Select tags for the mod.`nUse Up/Down Arrows to navigate.`nPress SPACE to toggle selection.`nPress ENTER to submit."
             $ExistingTagsArr = if ($null -ne $CurrentTagsObj) { @($CurrentTagsObj.name) } else { @() }
             

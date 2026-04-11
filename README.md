@@ -27,7 +27,7 @@ Instead of manually opening `config.json` every time you want to switch projects
 Create a brand new mod right from the CLI. 
 * It uses the **first `.png` file** in the script's folder as the mandatory Mod.io logo.
 * Prompts for the `Name` and `Summary`.
-* Offers an interactive multi-select menu (using `SPACE` to toggle and `ENTER` to submit) to assign tags (`Loadout`, `Windows`, `Android`, `Server`).
+* Offers an interactive multi-select menu (using `SPACE` to toggle and `ENTER` to submit) to assign tags (`Loadout`, `Windows`, `Android`, `Server`, `Map`, `CustomMode`).
 * Formats the new mod correctly with the exact hidden metadata structure required by the game developers, guaranteeing the mod will be recognized in-game.
 
 ### 5. Edit Mod
