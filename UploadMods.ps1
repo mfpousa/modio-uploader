@@ -1627,8 +1627,17 @@ if ($Choice -eq "1") {
                     Invoke-RestMethod -Uri "$BaseUrl/tags?$delQuery" -Method Delete -Headers $Headers | Out-Null
                 }
                 if ($ToAdd.Count -gt 0) {
-                    $addBody = (@($ToAdd | ForEach-Object { "tags[]=$([uri]::EscapeDataString($_))" })) -join '&'
-                    Invoke-RestMethod -Uri "$BaseUrl/tags" -Method Post -Headers $Headers -Body $addBody -ContentType 'application/x-www-form-urlencoded' | Out-Null
+                    # mod.io's POST /tags requires multipart/form-data; urlencoded triggers a 403 from the WAF.
+                    $boundary = "----WebKitFormBoundary$([System.Guid]::NewGuid().ToString('N'))"
+                    $sb = New-Object System.Text.StringBuilder
+                    foreach ($t in $ToAdd) {
+                        [void]$sb.Append("--$boundary`r`n")
+                        [void]$sb.Append("Content-Disposition: form-data; name=`"tags[]`"`r`n`r`n")
+                        [void]$sb.Append("$t`r`n")
+                    }
+                    [void]$sb.Append("--$boundary--`r`n")
+                    $bytes = [System.Text.Encoding]::GetEncoding('iso-8859-1').GetBytes($sb.ToString())
+                    Invoke-RestMethod -Uri "$BaseUrl/tags" -Method Post -Headers $Headers -Body $bytes -ContentType "multipart/form-data; boundary=$boundary" | Out-Null
                 }
             } catch {
                 $TagsApiOk = $false
