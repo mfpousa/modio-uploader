@@ -317,23 +317,342 @@ function Update-ModMetadata {
     }
 }
 
-function Show-TuiMenu {
-    param (
-        [string]$Title,
-        [string]$Subtitle,
-        [string[]]$Options,
-        [ConsoleColor[]]$OptionColors = $null
-    )
-    $selectedIndex = 0
-    
-    try { [Console]::CursorVisible = $false } catch {}
-    Clear-Host
+# ---------------------------------------------------------------------------
+# Low-level TUI primitives (modeled on feathered-unicorns/tools/manage.ps1)
+# ---------------------------------------------------------------------------
+
+function Hide-Cursor { try { [Console]::CursorVisible = $false } catch {} }
+function Show-Cursor { try { [Console]::CursorVisible = $true  } catch {} }
+
+function Write-At($x, $y, $text, $fg = $null, $bg = $null) {
+    try { [Console]::SetCursorPosition($x, $y) } catch { return }
+    if ($null -ne $fg -and $null -ne $bg) { Write-Host $text -ForegroundColor $fg -BackgroundColor $bg -NoNewline }
+    elseif ($null -ne $fg)                { Write-Host $text -ForegroundColor $fg -NoNewline }
+    else                                  { Write-Host $text -NoNewline }
+}
+
+function Clear-Region($x, $y, $width, $height) {
+    $blank = ' ' * [Math]::Max(0, $width)
+    for ($row = $y; $row -lt ($y + $height); $row++) { Write-At $x $row $blank }
+}
+
+# Read a line of text with inline editing. Returns string or $null on Esc.
+function Read-Line-TUI($px, $py, $prompt, $initial = '') {
+    Show-Cursor
+    $buf = [System.Collections.Generic.List[char]]@()
+    foreach ($c in $initial.ToCharArray()) { $buf.Add($c) }
+    $cur = $buf.Count
+    $w   = [Console]::WindowWidth - $px - 2
 
     while ($true) {
-        # Recalculate dimensions live to cleanly handle terminal window resizing 
-        $winWidth = if ([Console]::WindowWidth -gt 10) { [Console]::WindowWidth } else { 80 }
-        $winHeight = if ([Console]::WindowHeight -gt 10) { [Console]::WindowHeight } else { 24 }
-        $maxLen = $winWidth - 1
+        try { [Console]::SetCursorPosition($px, $py) } catch {}
+        $field   = (-join $buf)
+        $display = $prompt + $field + (' ' * [Math]::Max(0, $w - $field.Length))
+        Write-Host $display -NoNewline
+        try { [Console]::SetCursorPosition($px + $prompt.Length + $cur, $py) } catch {}
+
+        $k = [Console]::ReadKey($true)
+        switch ($k.Key) {
+            'Enter'      { Hide-Cursor; return (-join $buf) }
+            'Escape'     { Hide-Cursor; return $null }
+            'Backspace'  { if ($cur -gt 0) { $cur--; $buf.RemoveAt($cur) } }
+            'Delete'     { if ($cur -lt $buf.Count) { $buf.RemoveAt($cur) } }
+            'LeftArrow'  { if ($cur -gt 0) { $cur-- } }
+            'RightArrow' { if ($cur -lt $buf.Count) { $cur++ } }
+            'Home'       { $cur = 0 }
+            'End'        { $cur = $buf.Count }
+            default {
+                if ($k.KeyChar -ne "`0" -and $k.KeyChar -ne "`r") {
+                    $buf.Insert($cur, $k.KeyChar); $cur++
+                }
+            }
+        }
+    }
+}
+
+# Arrow-key menu. Returns 0-based index or -1 on Esc.
+# $headerLines: optional string[] painted above the menu (HUD).
+# $itemColors: optional ConsoleColor[] aligned with $items.
+function Show-Menu($title, [string[]]$items, $statusLine = '', $initialSel = 0, [string[]]$headerLines = $null, [ConsoleColor[]]$itemColors = $null) {
+    Hide-Cursor
+    $sel = if ($initialSel -ge 0 -and $initialSel -lt $items.Count) { $initialSel } else { 0 }
+    # Skip leading separators
+    while ($sel -lt $items.Count -and ($items[$sel] -like '---*' -or [string]::IsNullOrWhiteSpace($items[$sel]))) { $sel++ }
+    if ($sel -ge $items.Count) { $sel = 0 }
+    $top = 0
+
+    while ($true) {
+        Clear-Host
+        $h = [Console]::WindowHeight
+        $w = [Console]::WindowWidth - 4
+        $row = 1
+        if ($null -ne $headerLines) {
+            foreach ($hl in $headerLines) {
+                if ($row -ge $h - 4) { break }
+                Write-At 2 $row $hl Yellow
+                $row++
+            }
+            $row++
+        }
+        Write-At 2 $row $title Cyan
+        Write-At 2 ($row + 1) ('-' * [Math]::Min($title.Length + 2, $w)) DarkCyan
+        $listStart = $row + 2
+        $visCount  = [Math]::Max(1, $h - $listStart - 2)
+
+        if ($sel -lt $top) { $top = $sel }
+        elseif ($sel -ge $top + $visCount) { $top = $sel - $visCount + 1 }
+
+        for ($i = $top; $i -lt $items.Count -and ($i - $top) -lt $visCount; $i++) {
+            $r     = $listStart + ($i - $top)
+            $item  = $items[$i]
+            $label = "   $item  "
+            if ($label.Length -gt $w) { $label = $label.Substring(0, $w) }
+            if ($i -eq $sel) {
+                Write-At 2 $r $label Black White
+            } elseif ($item -like '---*' -or [string]::IsNullOrWhiteSpace($item)) {
+                Write-At 2 $r $label DarkGray
+            } elseif ($item -like '+*') {
+                Write-At 2 $r $label Green
+            } elseif ($item -like '<*') {
+                Write-At 2 $r $label DarkGray
+            } else {
+                $col = if ($null -ne $itemColors -and $i -lt $itemColors.Count -and $null -ne $itemColors[$i]) { $itemColors[$i] } else { [ConsoleColor]::White }
+                Write-At 2 $r $label $col
+            }
+        }
+        $fy  = [Math]::Min($listStart + $visCount, $h - 2)
+        $nav = if ($items.Count -gt $visCount) { "  ($($sel + 1)/$($items.Count))  Up/Down: scroll    Enter: select    Esc: back" } else { 'Arrow keys: navigate    Enter: select    Esc: back' }
+        if ($fy -ge 0 -and $fy -lt $h) { Write-At 2 $fy $nav DarkGray }
+        if ($statusLine -ne '' -and ($fy + 1) -lt $h) { Write-At 2 ($fy + 1) $statusLine Yellow }
+
+        $k = [Console]::ReadKey($true)
+        switch ($k.Key) {
+            'UpArrow' {
+                $orig = $sel
+                do {
+                    if ($sel -gt 0) { $sel-- } else { $sel = $items.Count - 1 }
+                    if ($sel -eq $orig) { break }
+                } while ($items[$sel] -like '---*' -or [string]::IsNullOrWhiteSpace($items[$sel]))
+            }
+            'DownArrow' {
+                $orig = $sel
+                do {
+                    if ($sel -lt $items.Count - 1) { $sel++ } else { $sel = 0 }
+                    if ($sel -eq $orig) { break }
+                } while ($items[$sel] -like '---*' -or [string]::IsNullOrWhiteSpace($items[$sel]))
+            }
+            'Home'      { $sel = 0; while ($sel -lt $items.Count -and ($items[$sel] -like '---*' -or [string]::IsNullOrWhiteSpace($items[$sel]))) { $sel++ } }
+            'End'       { $sel = $items.Count - 1; while ($sel -ge 0 -and ($items[$sel] -like '---*' -or [string]::IsNullOrWhiteSpace($items[$sel]))) { $sel-- } }
+            'Enter'     {
+                if (-not ($items[$sel] -like '---*' -or [string]::IsNullOrWhiteSpace($items[$sel]))) {
+                    Show-Cursor; return $sel
+                }
+            }
+            'Escape'    { Show-Cursor; return -1 }
+        }
+    }
+}
+
+# Fuzzy picker. Returns string (single), List[string] (multi), or $null on Esc.
+# Type to filter, arrows to navigate, Space to toggle (multi), Enter to confirm.
+function Show-Picker($title, [string[]]$items, $multiSelect = $false, [string[]]$subtexts = $null, $filterMode = 'fuzzy', [string[]]$preSelected = $null, $searchSubtexts = $true, [string[]]$headerLines = $null) {
+    Hide-Cursor
+    $selected = [System.Collections.Generic.List[string]]@()
+    if ($multiSelect -and $null -ne $preSelected) {
+        foreach ($p in $preSelected) { if ($p -ne '') { $selected.Add($p) } }
+    }
+    $query = ''
+    $sel   = 0
+    [string[]]$filtered = $items
+
+    while ($true) {
+        if ($query -eq '') {
+            $filtered = $items
+        } else {
+            $q = $query.ToLower()
+            $filtered = if ($items.Count -eq 0) { @() } else {
+                @(0..($items.Count - 1) | ForEach-Object {
+                    $candidate = $items[$_].ToLower()
+                    if ($searchSubtexts -and $null -ne $subtexts -and $_ -lt $subtexts.Count -and $subtexts[$_] -ne '') {
+                        $candidate = "$candidate $($subtexts[$_].ToLower())"
+                    }
+                    if ($filterMode -eq 'contains') {
+                        if ($candidate.Contains($q)) { [PSCustomObject]@{ Idx = $_; Score = 1 } }
+                    } else {
+                        $s = $candidate; $qi = 0; $bestRun = 0; $curRun = 0; $lastPos = -2
+                        for ($ci = 0; $ci -lt $s.Length; $ci++) {
+                            if ($qi -lt $q.Length -and $s[$ci] -eq $q[$qi]) {
+                                $curRun = if ($ci -eq $lastPos + 1) { $curRun + 1 } else { 1 }
+                                if ($curRun -gt $bestRun) { $bestRun = $curRun }
+                                $lastPos = $ci; $qi++
+                            }
+                        }
+                        if ($qi -eq $q.Length) { [PSCustomObject]@{ Idx = $_; Score = $bestRun } }
+                    }
+                } | Where-Object { $null -ne $_ } | Sort-Object @{E='Score';D=$true},@{E={$items[$_.Idx].Length};D=$false} | ForEach-Object { $items[$_.Idx] })
+            }
+        }
+        if ($null -eq $filtered) { $filtered = @() }
+        if ($filtered.Count -eq 0) { $sel = 0 }
+        elseif ($sel -ge $filtered.Count) { $sel = $filtered.Count - 1 }
+
+        Clear-Host
+        $w = [Console]::WindowWidth - 4
+        $row = 1
+        if ($null -ne $headerLines) {
+            foreach ($hl in $headerLines) {
+                Write-At 2 $row $hl Yellow
+                $row++
+            }
+            $row++
+        }
+        Write-At 2 $row $title Cyan
+        Write-At 2 ($row + 1) ('-' * [Math]::Min($title.Length + 2, $w)) DarkCyan
+        $searchRow = $row + 2
+        $searchLine = "  Search: $query"
+        Write-At 2 $searchRow ($searchLine + (' ' * [Math]::Max(0, $w - $searchLine.Length))) White
+        $selRow = $searchRow + 1
+        if ($multiSelect -and $selected.Count -gt 0) {
+            $sl = "  Selected ($($selected.Count)): " + ($selected -join ', ')
+            if ($sl.Length -gt $w) { $sl = $sl.Substring(0, $w - 3) + '...' }
+            Write-At 2 $selRow ($sl + (' ' * [Math]::Max(0, $w - $sl.Length))) Green
+        } else {
+            Clear-Region 2 $selRow $w 1
+        }
+        $listY  = $selRow + 1
+        $maxVis = [Math]::Max(1, [Console]::WindowHeight - $listY - 3)
+        if ($filtered.Count -eq 0) {
+            Write-At 2 $listY ('  (no matches)' + (' ' * $w)) DarkGray
+            Clear-Region 2 ($listY + 1) $w ($maxVis - 1)
+        } else {
+            $scrollTop = [Math]::Max(0, $sel - [Math]::Floor($maxVis / 2))
+            $scrollTop = [Math]::Min($scrollTop, [Math]::Max(0, $filtered.Count - $maxVis))
+            for ($vi = 0; $vi -lt $maxVis; $vi++) {
+                $fi = $scrollTop + $vi
+                if ($fi -ge $filtered.Count) { Clear-Region 2 ($listY + $vi) $w 1; continue }
+                $item   = $filtered[$fi]
+                $marker = if ($multiSelect) { if ($selected.Contains($item)) { '[x]' } else { '[ ]' } } else { '   ' }
+                $label  = "  $marker $item"
+                $sub    = ''
+                if ($null -ne $subtexts) {
+                    $origIdx = [Array]::IndexOf($items, $item)
+                    if ($origIdx -ge 0 -and $origIdx -lt $subtexts.Count -and $subtexts[$origIdx] -ne '') {
+                        $sub = "  $($subtexts[$origIdx])"
+                    }
+                }
+                $totalLen = $label.Length + $sub.Length
+                if ($totalLen -gt $w) {
+                    if ($label.Length -ge $w) { $label = $label.Substring(0, $w - 1); $sub = '' }
+                    else { $sub = $sub.Substring(0, $w - $label.Length) }
+                    $totalLen = $label.Length + $sub.Length
+                }
+                $pad = ' ' * [Math]::Max(0, $w - $totalLen)
+                if ($fi -eq $sel) {
+                    Write-At 2 ($listY + $vi) ($label + $sub + $pad) Black White
+                } else {
+                    Write-At 2 ($listY + $vi) $label White
+                    if ($sub -ne '') {
+                        Write-At (2 + $label.Length) ($listY + $vi) $sub DarkGray
+                    }
+                    Write-At (2 + $label.Length + $sub.Length) ($listY + $vi) $pad
+                }
+            }
+        }
+        $fy = [Console]::WindowHeight - 2
+        if ($multiSelect) { Write-At 2 $fy 'Type to filter   Up/Down: navigate   Space: toggle   Enter: confirm   Esc: cancel' DarkGray }
+        else              { Write-At 2 $fy 'Type to filter   Up/Down: navigate   Enter: select   Esc: cancel' DarkGray }
+
+        $k = [Console]::ReadKey($true)
+        switch ($k.Key) {
+            'Escape' { Show-Cursor; return $null }
+            'Enter'  {
+                Show-Cursor
+                if ($multiSelect) { return ,$selected }
+                if ($filtered.Count -gt 0) { return $filtered[$sel] }
+                return $null
+            }
+            'UpArrow'   { if ($sel -gt 0) { $sel-- } }
+            'DownArrow' { if ($sel -lt $filtered.Count - 1) { $sel++ } }
+            'Spacebar'  {
+                if ($multiSelect -and $filtered.Count -gt 0) {
+                    $item = $filtered[$sel]
+                    if ($selected.Contains($item)) { $selected.Remove($item) | Out-Null }
+                    else { $selected.Add($item) }
+                }
+            }
+            'Backspace' {
+                if ($query.Length -gt 0) { $query = $query.Substring(0, $query.Length - 1) }
+                $sel = 0
+            }
+            default {
+                $ch = $k.KeyChar
+                if ($ch -ne "`0" -and $ch -ne "`r" -and $ch -ne ' ' -and $k.Key -ne 'Enter') {
+                    $query += $ch; $sel = 0
+                }
+            }
+        }
+    }
+}
+
+# Show message and wait for any key
+function Show-Status($msg, $color = 'Green') {
+    Clear-Host
+    $row = 2
+    foreach ($line in (($msg -replace "`r", '') -split "`n")) {
+        Write-At 2 $row $line $color
+        $row++
+    }
+    Write-At 2 ($row + 1) 'Press any key...' DarkGray
+    [Console]::ReadKey($true) | Out-Null
+}
+
+# Show a transient error line, returns immediately
+function Show-Error($msg, $row = 6) {
+    Write-At 2 $row (' ' * ([Console]::WindowWidth - 4))
+    Write-At 2 $row $msg Red
+}
+
+# Yes/No prompt. Returns $true / $false (Esc = $false).
+function Show-Confirm($title, $prompt, $defaultYes = $false) {
+    $sel = Show-Menu $title @('No', 'Yes') $prompt (if ($defaultYes) { 1 } else { 0 })
+    return ($sel -eq 1)
+}
+
+# Read a single field on a fresh screen. Returns string or $null on Esc.
+function Read-Field($title, $prompt, $initial = '', [string[]]$headerLines = $null) {
+    Hide-Cursor
+    Clear-Host
+    $row = 1
+    if ($null -ne $headerLines) {
+        foreach ($hl in $headerLines) { Write-At 2 $row $hl Yellow; $row++ }
+        $row++
+    }
+    Write-At 2 $row $title Cyan
+    Write-At 2 ($row + 1) 'Esc to cancel, Enter to confirm.' DarkGray
+    return Read-Line-TUI 2 ($row + 3) $prompt $initial
+}
+
+# Stub left in place so the original main loop body can keep its skeleton until refactored
+function Show-TuiMenu {
+    param ([string]$Title, [string]$Subtitle, [string[]]$Options, [ConsoleColor[]]$OptionColors = $null)
+    $hdr = if (-not [string]::IsNullOrWhiteSpace($Subtitle)) { (($Subtitle -replace "`r", '') -split "`n") } else { $null }
+    $sel = Show-Menu $Title $Options '' 0 $hdr $OptionColors
+    if ($sel -lt 0) { return '0' }
+    return [string]($sel + 1)
+}
+
+function Show-TuiMultiSelect {
+    param ([string]$Title, [string]$Subtitle, [string[]]$Options, [string[]]$Preselected = @())
+    $hdr = if (-not [string]::IsNullOrWhiteSpace($Subtitle)) { (($Subtitle -replace "`r", '') -split "`n") } else { $null }
+    $res = Show-Picker $Title $Options $true $null 'fuzzy' $Preselected $true $hdr
+    if ($null -eq $res) { return @() }
+    return @($res)
+}
+
+# Legacy implementations removed - replaced by Show-Menu/Show-Picker above.
+function _Removed_Legacy_PlaceholderToBeDeleted {
+    while ($true) {
+        $winWidth = 80; $winHeight = 24; $maxLen = $winWidth - 1
 
         # Prepare Header completely pre-wrapped
         $headerText = @()
@@ -495,7 +814,7 @@ function Show-TuiMenu {
     return [string]($selectedIndex + 1)
 }
 
-function Show-TuiMultiSelect {
+function _Removed_Legacy_TuiMultiSelect_PlaceholderToBeDeleted {
     param (
         [string]$Title,
         [string]$Subtitle,
@@ -875,20 +1194,15 @@ if ($Choice -eq "1") {
     $UploadChoice = Show-TuiMenu -Title "Review Pending Uploads" -Subtitle $UploadMenuSubtitle -Options $UploadOptions
 
     if ($FoundCount -eq 0 -or $UploadChoice -ne "1") {
-        Write-Host "Upload cancelled." -ForegroundColor Yellow
-        Write-Host "`nPress any key to return to main menu..." -ForegroundColor Cyan
-        [Console]::ReadKey($true) | Out-Null
+        Show-Status 'Upload cancelled.' Yellow
         continue
     }
 
+    $GlobalChangelog = Read-Field 'Mod.io Release Configuration' 'Changelog (optional, blank for none): ' ''
+    if ($null -eq $GlobalChangelog) { Show-Status 'Upload cancelled.' Yellow; continue }
+
     Clear-Host
-    Write-Host "=========================================" -ForegroundColor Magenta
-    Write-Host "  Mod.io Release Configuration" -ForegroundColor White -BackgroundColor DarkMagenta
-    Write-Host "=========================================`n" -ForegroundColor Magenta
-    
-    $GlobalChangelog = Read-Host "Enter an optional changelog for this release (leave blank for none)"
-    
-    Write-Host "`n--- Starting Uploads ---" -ForegroundColor Cyan
+    Write-Host "--- Starting Uploads ---" -ForegroundColor Cyan
 
     $WindowsId = Upload-MultipartFile -FilePath $WindowsZip -Label "Windows" -Changelog $GlobalChangelog
     $AndroidId = Upload-MultipartFile -FilePath $AndroidZip -Label "Android" -Changelog $GlobalChangelog
@@ -1066,16 +1380,12 @@ if ($Choice -eq "1") {
             }
 
             if ($Cancelled) {
-                Write-Host "Rollback cancelled." -ForegroundColor Yellow
-                Write-Host "`nPress any key to return to main menu..." -ForegroundColor Cyan
-                [Console]::ReadKey($true) | Out-Null
+                Show-Status 'Rollback cancelled.' Yellow
                 continue
             }
 
             if ([string]::IsNullOrWhiteSpace($SelWindowsId) -and [string]::IsNullOrWhiteSpace($SelServerId) -and [string]::IsNullOrWhiteSpace($SelAndroidId)) {
-                Write-Host "No files selected to rollback. Aborting." -ForegroundColor Yellow
-                Write-Host "`nPress any key to return to main menu..." -ForegroundColor Cyan
-                [Console]::ReadKey($true) | Out-Null
+                Show-Status 'No files selected to rollback. Aborting.' Yellow
                 continue
             }
 
@@ -1138,11 +1448,7 @@ if ($Choice -eq "1") {
             if ($null -eq $ModDataPathsVal -or $ModDataPathsVal.Count -eq 0) { $MissingPluginData = $true }
             
             if ($MissingPluginData) {
-                Write-Host "`nCRITICAL ERROR: pluginRoot or modDataPaths could not be resolved." -ForegroundColor Red
-                Write-Host "A valid existing Mod.io record or successful zip extraction is required." -ForegroundColor Yellow
-                Write-Host "Rollback cancelled." -ForegroundColor Yellow
-                Write-Host "`nPress any key to return to main menu..." -ForegroundColor Cyan
-                [Console]::ReadKey($true) | Out-Null
+                Show-Status "CRITICAL ERROR: pluginRoot or modDataPaths could not be resolved.`nA valid existing Mod.io record or successful zip extraction is required.`nRollback cancelled." Red
                 continue
             }
 
@@ -1152,12 +1458,9 @@ if ($Choice -eq "1") {
                 foreach ($item in $MissingData) {
                     Write-Host "  - $item" -ForegroundColor Red
                 }
-                Write-Host "Proceeding will upload this incomplete data to the Mod.io server." -ForegroundColor Yellow
-                $ContinueObj = Read-Host "Are you sure you want to continue? (Y/N)"
-                if ($ContinueObj -notmatch "^[Yy]") {
-                    Write-Host "Rollback cancelled by user." -ForegroundColor Yellow
-                    Write-Host "`nPress any key to return to main menu..." -ForegroundColor Cyan
-                    [Console]::ReadKey($true) | Out-Null
+                $missingMsg = "Missing platform IDs: $($MissingData -join ', ')"
+                if (-not (Show-Confirm 'Rollback: Confirm Incomplete Data' "$missingMsg`nProceed anyway?" $false)) {
+                    Show-Status 'Rollback cancelled by user.' Yellow
                     continue
                 }
             }
@@ -1177,151 +1480,37 @@ if ($Choice -eq "1") {
 
     if ($null -ne $MyModsRes -and $null -ne $MyModsRes.data -and $MyModsRes.data.Count -gt 0) {
         $ModObjs = $MyModsRes.data
-
-        $FilterStr = ""
-        $SelectedIndex = 0
-        $Cancelled = $false
-        $ConfirmedIndex = -1
-
-        try { [Console]::CursorVisible = $false } catch {}
-        Clear-Host
-
-        while ($true) {
-            $winWidth = if ([Console]::WindowWidth -gt 10) { [Console]::WindowWidth } else { 80 }
-            $winHeight = if ([Console]::WindowHeight -gt 10) { [Console]::WindowHeight } else { 24 }
-            
-            # Fuzzy filter logic
-            $FilteredIndices = @()
-            if ([string]::IsNullOrWhiteSpace($FilterStr)) {
-                for ($i=0; $i -lt $ModObjs.Count; $i++) { $FilteredIndices += $i }
-            } else {
-                $SearchPattern = ($FilterStr.ToCharArray() | foreach { [regex]::Escape($_) }) -join '.*'
-                for ($i=0; $i -lt $ModObjs.Count; $i++) {
-                    if ($ModObjs[$i].name -match "(?i)$SearchPattern") {
-                        $FilteredIndices += $i
-                    }
-                }
-            }
-
-            if ($SelectedIndex -ge $FilteredIndices.Count) { $SelectedIndex = [math]::Max(0, $FilteredIndices.Count - 1) }
-
-            $headerText = @(
-                "=========================================",
-                "  Select Target Mod",
-                "=========================================",
-                "Select the mod you want to manage. ModId will be saved to config.json.",
-                "Start typing to filter. Up/Down to select. Enter to confirm. Esc to cancel.",
-                "-----------------------------------------",
-                "Filter: $(if($FilterStr){$FilterStr}else{'<type to search>'})",
-                "-----------------------------------------"
-            )
-
-            try { [Console]::SetCursorPosition(0, 0) } catch {}
-
-            foreach ($i in 0..7) {
-                if ($headerText[$i].Length -ge ($winWidth-1)) {
-                    $headerText[$i] = $headerText[$i].Substring(0, $winWidth-1)
-                } else {
-                    $headerText[$i] = $headerText[$i].PadRight($winWidth-1, ' ')
-                }
-            }
-
-            Write-Host $headerText[0] -ForegroundColor Magenta
-            Write-Host $headerText[1] -ForegroundColor White -BackgroundColor DarkMagenta
-            Write-Host $headerText[2] -ForegroundColor Magenta
-            Write-Host $headerText[3] -ForegroundColor DarkCyan
-            Write-Host $headerText[4] -ForegroundColor DarkCyan
-            Write-Host $headerText[5] -ForegroundColor DarkGray
-            Write-Host $headerText[6] -ForegroundColor Yellow
-            Write-Host $headerText[7] -ForegroundColor DarkGray
-
-            $linesDrawn = 0
-            $maxMenuLines = $winHeight - $headerText.Count - 2
-            
-            if ($FilteredIndices.Count -eq 0) {
-                Write-Host "  (No matches found)".PadRight($winWidth-1, ' ') -ForegroundColor Red
-                $linesDrawn++
-            } else {
-                $startIdx = 0
-                if ($SelectedIndex -ge $maxMenuLines) {
-                    $startIdx = $SelectedIndex - $maxMenuLines + 1
-                }
-                $endIdx = [math]::Min($startIdx + $maxMenuLines - 1, $FilteredIndices.Count - 1)
-
-                for ($i = $startIdx; $i -le $endIdx; $i++) {
-                    $mIdx = $FilteredIndices[$i]
-                    $m = $ModObjs[$mIdx]
-                    
-                    $dispStr = "[$($m.id)] $($m.name)"
-                    $pfx = if ($i -eq $SelectedIndex) { "  > " } else { "    " }
-                    $str = "$pfx$dispStr".PadRight($winWidth-1, ' ')
-
-                    if ($i -eq $SelectedIndex) {
-                        Write-Host $str -ForegroundColor Black -BackgroundColor Cyan
-                    } else {
-                        Write-Host $str -ForegroundColor Gray -BackgroundColor Black
-                    }
-                    $linesDrawn++
-                }
-            }
-
-            $blankStr = "".PadRight($winWidth-1, ' ')
-            $linesToClear = $winHeight - $headerText.Count - $linesDrawn - 1
-            if ($linesToClear -gt 0) {
-                for ($c = 0; $c -lt $linesToClear; $c++) { Write-Host $blankStr }
-            }
-
-            $key = [Console]::ReadKey($true)
-            if ($key.Key -eq 'Escape') {
-                $Cancelled = $true
-                break
-            } elseif ($key.Key -eq 'Enter') {
-                if ($FilteredIndices.Count -gt 0) {
-                    $ConfirmedIndex = $FilteredIndices[$SelectedIndex]
-                } else {
-                    $Cancelled = $true
-                }
-                break
-            } elseif ($key.Key -eq 'UpArrow') {
-                $SelectedIndex = ($SelectedIndex - 1 + [math]::Max(1, $FilteredIndices.Count)) % [math]::Max(1, $FilteredIndices.Count)
-            } elseif ($key.Key -eq 'DownArrow') {
-                $SelectedIndex = ($SelectedIndex + 1) % [math]::Max(1, $FilteredIndices.Count)
-            } elseif ($key.Key -eq 'Backspace') {
-                if ($FilterStr.Length -gt 0) {
-                    $FilterStr = $FilterStr.Substring(0, $FilterStr.Length - 1)
-                }
-            } elseif (-not [char]::IsControl($key.KeyChar)) {
-                $FilterStr += $key.KeyChar
-            }
-        }
-
-        try { [Console]::CursorVisible = $true } catch {}
-        Clear-Host
-
-        if (-not $Cancelled -and $ConfirmedIndex -ge 0) {
-            $SelectedMod = $ModObjs[$ConfirmedIndex]
+        $items = @($ModObjs | ForEach-Object { $_.name })
+        $subs  = @($ModObjs | ForEach-Object {
+            $upd = if ($null -ne $_.date_updated) { (Get-Date '1970-01-01T00:00:00Z').AddSeconds($_.date_updated).ToLocalTime().ToString('yyyy-MM-dd') } else { '?' }
+            "[$($_.id)]  updated $upd"
+        })
+        $picked = Show-Picker 'Select Target Mod' $items $false $subs 'fuzzy' $null $true @('Pick a mod to manage. Saved to config.json.')
+        if ($null -ne $picked) {
+            $idx = [Array]::IndexOf($items, $picked)
+            $SelectedMod = $ModObjs[$idx]
             $Config.modId = [string]$SelectedMod.id
             $Config | ConvertTo-Json -Depth 10 | Set-Content $ConfigPath
-            
             $ModId = $Config.modId
             $BaseUrl = "https://api.mod.io/v1/games/$GameId/mods/$ModId"
-            
-            Write-Host "Successfully changed target mod to: $($SelectedMod.name) ($($SelectedMod.id))" -ForegroundColor Green
+            Show-Status "Switched target mod to: $($SelectedMod.name) ($($SelectedMod.id))" Green
+            continue
         } else {
-            Write-Host "Mod selection cancelled." -ForegroundColor Yellow
+            Show-Status 'Mod selection cancelled.' Yellow
+            continue
         }
     } else {
-        Write-Host "No mods found for this game, or failed to fetch." -ForegroundColor Yellow
+        Show-Status 'No mods found for this game, or failed to fetch.' Yellow
+        continue
     }
 } elseif ($Choice -eq "5") {
-    Write-Host "`n--- Interactive Mod Creation ---" -ForegroundColor Cyan
-    $NewModName = Read-Host "Enter the Name for the new mod"
-    $NewModSummary = Read-Host "Enter a short Summary for the new mod"
+    $NewModName = Read-Field 'Create New Mod' 'Name: ' ''
+    if ($null -eq $NewModName) { Show-Status 'Mod creation cancelled.' Yellow; continue }
+    $NewModSummary = Read-Field 'Create New Mod' 'Summary: ' '' @("Name: $NewModName")
+    if ($null -eq $NewModSummary) { Show-Status 'Mod creation cancelled.' Yellow; continue }
 
     if ([string]::IsNullOrWhiteSpace($NewModName) -or [string]::IsNullOrWhiteSpace($NewModSummary)) {
-        Write-Host "Name and Summary are required. Aborting mod creation." -ForegroundColor Red
-        Write-Host "`nPress any key to return to main menu..." -ForegroundColor Cyan
-        [Console]::ReadKey($true) | Out-Null
+        Show-Status 'Name and Summary are required. Aborting mod creation.' Red
         continue
     }
 
@@ -1331,9 +1520,7 @@ if ($Choice -eq "1") {
 
     $LogoFile = Get-ChildItem -Path $PSScriptRoot -Filter "*.png" | Select-Object -First 1
     if (-not $LogoFile) {
-        Write-Host "Error: No .png file found in the current directory to use as a logo. A logo is required by Mod.io." -ForegroundColor Red
-        Write-Host "`nPress any key to return to main menu..." -ForegroundColor Cyan
-        [Console]::ReadKey($true) | Out-Null
+        Show-Status 'Error: No .png file found in the current directory to use as a logo. A logo is required by Mod.io.' Red
         continue
     }
 
@@ -1342,11 +1529,10 @@ if ($Choice -eq "1") {
     if ($null -ne $NewModId) {
         $Config.modId = $NewModId
         $Config | ConvertTo-Json -Depth 10 | Set-Content $ConfigPath
-        
         $ModId = $Config.modId
         $BaseUrl = "https://api.mod.io/v1/games/$GameId/mods/$ModId"
-        
-        Write-Host "Target mode mapped to brand new mod successfully." -ForegroundColor Green
+        Show-Status "Target mod set to new mod (ID: $NewModId)." Green
+        continue
     }
 } elseif ($Choice -eq "6") {
     while ($true) {
@@ -1354,9 +1540,7 @@ if ($Choice -eq "1") {
         $CurrentModInfo = try { Invoke-RestMethod -Uri $BaseUrl -Method Get -Headers $Headers } catch { $null }
         
         if ($null -eq $CurrentModInfo) {
-            Write-Host "Failed to fetch mod info. Ensure the Target Mod exists." -ForegroundColor Red
-            Write-Host "Press any key to return..." -ForegroundColor Cyan
-            [Console]::ReadKey($true) | Out-Null
+            Show-Status 'Failed to fetch mod info. Ensure the Target Mod exists.' Red
             break
         }
         
@@ -1379,26 +1563,22 @@ if ($Choice -eq "1") {
         }
 
         if ($EditChoice -eq "1") {
-            Write-Host "`n--- Edit Name ---" -ForegroundColor Cyan
-            $NewName = Read-Host "Enter new Name (leave blank to cancel)"
-            if (-not [string]::IsNullOrWhiteSpace($NewName)) {
+            $NewName = Read-Field 'Edit Name' 'Name: ' $CurrentModInfo.name
+            if ($null -ne $NewName -and -not [string]::IsNullOrWhiteSpace($NewName) -and $NewName -ne $CurrentModInfo.name) {
                 try {
                     $BodyData = "name=$([uri]::EscapeDataString($NewName))"
-                    Invoke-RestMethod -Uri $BaseUrl -Method Put -Headers $Headers -Body $BodyData -ContentType "application/x-www-form-urlencoded" | Out-Null
-                    Write-Host "Name updated successfully!" -ForegroundColor Green
-                    Start-Sleep -Seconds 1
-                } catch { Write-Host "Failed to update Name: $($_.Exception.Message)" -ForegroundColor Red; Start-Sleep -Seconds 2 }
+                    Invoke-RestMethod -Uri $BaseUrl -Method Put -Headers $Headers -Body $BodyData -ContentType 'application/x-www-form-urlencoded' | Out-Null
+                    Show-Status 'Name updated successfully!' Green
+                } catch { Show-Status "Failed to update Name: $($_.Exception.Message)" Red }
             }
         } elseif ($EditChoice -eq "2") {
-            Write-Host "`n--- Edit Summary ---" -ForegroundColor Cyan
-            $NewSummary = Read-Host "Enter new Summary (leave blank to cancel)"
-            if (-not [string]::IsNullOrWhiteSpace($NewSummary)) {
+            $NewSummary = Read-Field 'Edit Summary' 'Summary: ' $CurrentModInfo.summary
+            if ($null -ne $NewSummary -and -not [string]::IsNullOrWhiteSpace($NewSummary) -and $NewSummary -ne $CurrentModInfo.summary) {
                 try {
                     $BodyData = "summary=$([uri]::EscapeDataString($NewSummary))"
-                    Invoke-RestMethod -Uri $BaseUrl -Method Put -Headers $Headers -Body $BodyData -ContentType "application/x-www-form-urlencoded" | Out-Null
-                    Write-Host "Summary updated successfully!" -ForegroundColor Green
-                    Start-Sleep -Seconds 1
-                } catch { Write-Host "Failed to update Summary: $($_.Exception.Message)" -ForegroundColor Red; Start-Sleep -Seconds 2 }
+                    Invoke-RestMethod -Uri $BaseUrl -Method Put -Headers $Headers -Body $BodyData -ContentType 'application/x-www-form-urlencoded' | Out-Null
+                    Show-Status 'Summary updated successfully!' Green
+                } catch { Show-Status "Failed to update Summary: $($_.Exception.Message)" Red }
             }
         } elseif ($EditChoice -eq "3") {
             $AvailableTags = @("Loadout", "Windows", "Android", "Server", "Map", "CustomMode")
@@ -1490,6 +1670,6 @@ if ($Choice -eq "1") {
     Write-Host "Invalid selection. Going back to main menu." -ForegroundColor Red
 }
 
-Write-Host "`nOperation complete. Press any key to return to main menu..." -ForegroundColor Cyan
+Write-Host "`nOperation complete. Press any key to return to main menu..." -ForegroundColor DarkGray
 [Console]::ReadKey($true) | Out-Null
 }
