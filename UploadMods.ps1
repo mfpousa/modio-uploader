@@ -1581,42 +1581,85 @@ if ($Choice -eq "1") {
                 } catch { Show-Status "Failed to update Summary: $($_.Exception.Message)" Red }
             }
         } elseif ($EditChoice -eq "3") {
-            $AvailableTags = @("Loadout", "Windows", "Android", "Server", "Map", "CustomMode")
-            $TagSelectionSubtitle = "Select tags for the mod.`nUse Up/Down Arrows to navigate.`nPress SPACE to toggle selection.`nPress ENTER to submit."
-            $ExistingTagsArr = if ($null -ne $CurrentTagsObj) { @($CurrentTagsObj.name) } else { @() }
-            
-            $SelectedTags = Show-TuiMultiSelect -Title "Edit Mod Tags" -Subtitle $TagSelectionSubtitle -Options $AvailableTags -Preselected $ExistingTagsArr
-            
-            Write-Host "`nUpdating tags..." -ForegroundColor Cyan
-            try {
-                $PutBody = @()
-                foreach ($t in $SelectedTags) { $PutBody += "tags[]=$([uri]::EscapeDataString($t))" }
-                
-                if ($PutBody.Count -gt 0) {
-                    # Overwrite all tags using the PUT endpoint directly on the mod
-                    Invoke-RestMethod -Uri $BaseUrl -Method Put -Headers $Headers -Body ($PutBody -join '&') -ContentType "application/x-www-form-urlencoded" | Out-Null
-                } else {
-                    # Wiping all tags requires DELETE. We pass via query string to avoid WAF 403 Forbidden errors on DELETE bodies
-                    if ($ExistingTagsArr.Count -gt 0) {
-                        $DelQuery = @()
-                        foreach ($t in $ExistingTagsArr) { $DelQuery += "tags[]=$([uri]::EscapeDataString($t))" }
-                        $DelUri = "$BaseUrl/tags?" + ($DelQuery -join '&')
-                        Invoke-RestMethod -Uri $DelUri -Method Delete -Headers $Headers | Out-Null
-                    }
+            # Fetch the game's actual tag schema instead of hard-coding values.
+            # The mod PUT endpoint silently ignores tags[]; tags must go through
+            # POST /tags (add) and DELETE /tags (remove) on the mod.
+            $TagSchemaRes = try { Invoke-RestMethod -Uri "https://api.mod.io/v1/games/$GameId/tags" -Method Get -Headers $Headers } catch { $null }
+            $AvailableTags = @()
+            if ($null -ne $TagSchemaRes -and $null -ne $TagSchemaRes.data) {
+                foreach ($cat in $TagSchemaRes.data) {
+                    if ($null -ne $cat.tags) { $AvailableTags += @($cat.tags) }
                 }
-                Write-Host "Tags updated successfully!" -ForegroundColor Green
-                Start-Sleep -Seconds 1
+                $AvailableTags = @($AvailableTags | Select-Object -Unique)
+            }
+            $ExistingTagsArr = if ($null -ne $CurrentTagsObj) { @($CurrentTagsObj.name) } else { @() }
+            # Make sure currently-applied tags that aren't in the schema still show up so the user can see/remove them.
+            foreach ($t in $ExistingTagsArr) { if ($AvailableTags -notcontains $t) { $AvailableTags += $t } }
+            if ($AvailableTags.Count -eq 0) {
+                Show-Status 'Failed to fetch tag schema from mod.io and no existing tags to seed the list.' Red
+                continue
+            }
+
+            $TagSelectionSubtitle = "Select tags for the mod.`nUse Up/Down Arrows to navigate.`nPress SPACE to toggle selection.`nPress ENTER to submit."
+            $SelectedTags = Show-TuiMultiSelect -Title "Edit Mod Tags" -Subtitle $TagSelectionSubtitle -Options $AvailableTags -Preselected $ExistingTagsArr
+
+            $SelectedTagsArr = @($SelectedTags)
+            $ToAdd    = @($SelectedTagsArr | Where-Object { $ExistingTagsArr -notcontains $_ })
+            $ToRemove = @($ExistingTagsArr  | Where-Object { $SelectedTagsArr  -notcontains $_ })
+
+            if ($ToAdd.Count -eq 0 -and $ToRemove.Count -eq 0) {
+                Show-Status 'No tag changes to apply.' DarkGray
+                continue
+            }
+
+            Clear-Host
+            Write-Host "Updating tags..." -ForegroundColor Cyan
+            if ($ToAdd.Count    -gt 0) { Write-Host ("  + " + ($ToAdd    -join ', ')) -ForegroundColor Green }
+            if ($ToRemove.Count -gt 0) { Write-Host ("  - " + ($ToRemove -join ', ')) -ForegroundColor Yellow }
+
+            $TagsApiOk = $true
+            $TagsApiErr = ''
+            try {
+                if ($ToRemove.Count -gt 0) {
+                    # DELETE with body=tags[]=... ; pass via query string too as belt-and-braces against WAFs that strip DELETE bodies.
+                    $delQuery = (@($ToRemove | ForEach-Object { "tags[]=$([uri]::EscapeDataString($_))" })) -join '&'
+                    Invoke-RestMethod -Uri "$BaseUrl/tags?$delQuery" -Method Delete -Headers $Headers -Body $delQuery -ContentType 'application/x-www-form-urlencoded' | Out-Null
+                }
+                if ($ToAdd.Count -gt 0) {
+                    $addBody = (@($ToAdd | ForEach-Object { "tags[]=$([uri]::EscapeDataString($_))" })) -join '&'
+                    Invoke-RestMethod -Uri "$BaseUrl/tags" -Method Post -Headers $Headers -Body $addBody -ContentType 'application/x-www-form-urlencoded' | Out-Null
+                }
             } catch {
-                Write-Host "Failed to update tags: $($_.Exception.Message)" -ForegroundColor Red
+                $TagsApiOk = $false
+                $TagsApiErr = $_.Exception.Message
                 if ($null -ne $_.Exception.Response) {
                     try {
                         $errStream = $_.Exception.Response.GetResponseStream()
                         $errReader = New-Object System.IO.StreamReader($errStream)
-                        Write-Host "Server details: $($errReader.ReadToEnd())" -ForegroundColor DarkRed
+                        $TagsApiErr += "`n" + $errReader.ReadToEnd()
                         $errReader.Close()
                     } catch {}
                 }
-                Start-Sleep -Seconds 3
+            }
+
+            if (-not $TagsApiOk) {
+                Show-Status "Failed to update tags:`n$TagsApiErr" Red
+                continue
+            }
+
+            # Verify the change actually landed by re-fetching from the server.
+            $VerifyMod = try { Invoke-RestMethod -Uri $BaseUrl -Method Get -Headers $Headers } catch { $null }
+            $VerifyTags = if ($null -ne $VerifyMod -and $null -ne $VerifyMod.tags) { @($VerifyMod.tags.name) } else { @() }
+            $StillAdd    = @($ToAdd    | Where-Object { $VerifyTags -notcontains $_ })
+            $StillRemove = @($ToRemove | Where-Object { $VerifyTags -contains    $_ })
+            if ($StillAdd.Count -eq 0 -and $StillRemove.Count -eq 0) {
+                Show-Status "Tags updated successfully!`nNow on mod.io: $(if($VerifyTags.Count -gt 0){$VerifyTags -join ', '}else{'(none)'})" Green
+            } else {
+                $msg = "Tag update partially applied. Server now reports: $(if($VerifyTags.Count -gt 0){$VerifyTags -join ', '}else{'(none)'})"
+                if ($StillAdd.Count    -gt 0) { $msg += "`nNot added: "    + ($StillAdd    -join ', ') }
+                if ($StillRemove.Count -gt 0) { $msg += "`nNot removed: "  + ($StillRemove -join ', ') }
+                $msg += "`nThe missing tags may not exist in this game's tag schema."
+                Show-Status $msg Yellow
             }
         } elseif ($EditChoice -eq "4") {
             $LogoFile = Get-ChildItem -Path $PSScriptRoot -Filter "*.png" | Select-Object -First 1
