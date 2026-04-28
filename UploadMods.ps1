@@ -1621,9 +1621,10 @@ if ($Choice -eq "1") {
             $TagsApiErr = ''
             try {
                 if ($ToRemove.Count -gt 0) {
-                    # DELETE with body=tags[]=... ; pass via query string too as belt-and-braces against WAFs that strip DELETE bodies.
+                    # mod.io's edge/WAF returns 415 (or 403) when DELETE has a body or Content-Type set.
+                    # Pass tags[]=... only via the query string and send no body / no Content-Type.
                     $delQuery = (@($ToRemove | ForEach-Object { "tags[]=$([uri]::EscapeDataString($_))" })) -join '&'
-                    Invoke-RestMethod -Uri "$BaseUrl/tags?$delQuery" -Method Delete -Headers $Headers -Body $delQuery -ContentType 'application/x-www-form-urlencoded' | Out-Null
+                    Invoke-RestMethod -Uri "$BaseUrl/tags?$delQuery" -Method Delete -Headers $Headers | Out-Null
                 }
                 if ($ToAdd.Count -gt 0) {
                     $addBody = (@($ToAdd | ForEach-Object { "tags[]=$([uri]::EscapeDataString($_))" })) -join '&'
