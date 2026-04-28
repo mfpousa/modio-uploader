@@ -387,12 +387,46 @@ function Show-Menu($title, [string[]]$items, $statusLine = '', $initialSel = 0, 
         $w = [Console]::WindowWidth - 4
         $row = 1
         if ($null -ne $headerLines) {
+            $pBg    = [ConsoleColor]::DarkBlue
+            $pBdr   = [ConsoleColor]::DarkCyan
+            $pLbl   = [ConsoleColor]::Cyan
+            $pVal   = [ConsoleColor]::White
+            $pPlain = [ConsoleColor]::Gray
+            $panelW = $w + 2
+            $innerW = $panelW - 2
+            $xL     = 2
+            $xR     = $xL + $innerW + 1
+            $bH = [char]0x2550; $bV = [char]0x2551
+            $bTL = [char]0x2554; $bTR = [char]0x2557
+            $bBL = [char]0x255A; $bBR = [char]0x255D
+
+            Write-At $xL $row ("$bTL" + ([string]$bH * $innerW) + "$bTR") $pBdr $pBg
+            $row++
+
             foreach ($hl in $headerLines) {
-                if ($row -ge $h - 4) { break }
-                Write-At 2 $row $hl Yellow
+                if ($row -ge $h - 5) { break }
+                Write-At $xL $row "$bV" $pBdr $pBg
+                Write-At $xR $row "$bV" $pBdr $pBg
+                if ($hl -match '^( *)([ \w]+?)(\s*:\s*)(.*)$') {
+                    $lblStr = " $($matches[1])$($matches[2])$($matches[3])"
+                    $valStr = $matches[4]
+                    $maxLbl = [Math]::Min($lblStr.Length, $innerW - 1)
+                    $lblStr = $lblStr.Substring(0, $maxLbl)
+                    $valW   = $innerW - $maxLbl
+                    $valStr = $valStr.PadRight($valW)
+                    if ($valStr.Length -gt $valW) { $valStr = $valStr.Substring(0, $valW) }
+                    Write-At ($xL + 1) $row $lblStr $pLbl $pBg
+                    if ($valW -gt 0) { Write-At ($xL + 1 + $maxLbl) $row $valStr $pVal $pBg }
+                } else {
+                    $plain = " $hl".PadRight($innerW)
+                    if ($plain.Length -gt $innerW) { $plain = $plain.Substring(0, $innerW) }
+                    Write-At ($xL + 1) $row $plain $pPlain $pBg
+                }
                 $row++
             }
-            $row++
+
+            Write-At $xL $row ("$bBL" + ([string]$bH * $innerW) + "$bBR") $pBdr $pBg
+            $row += 2
         }
         Write-At 2 $row $title Cyan
         Write-At 2 ($row + 1) ('-' * [Math]::Min($title.Length + 2, $w)) DarkCyan
@@ -500,11 +534,31 @@ function Show-Picker($title, [string[]]$items, $multiSelect = $false, [string[]]
         $w = [Console]::WindowWidth - 4
         $row = 1
         if ($null -ne $headerLines) {
+            $pBg    = [ConsoleColor]::DarkBlue
+            $pBdr   = [ConsoleColor]::DarkCyan
+            $pPlain = [ConsoleColor]::Gray
+            $panelW = $w + 2
+            $innerW = $panelW - 2
+            $xL     = 2
+            $xR     = $xL + $innerW + 1
+            $bH = [char]0x2550; $bV = [char]0x2551
+            $bTL = [char]0x2554; $bTR = [char]0x2557
+            $bBL = [char]0x255A; $bBR = [char]0x255D
+
+            Write-At $xL $row ("$bTL" + ([string]$bH * $innerW) + "$bTR") $pBdr $pBg
+            $row++
+
             foreach ($hl in $headerLines) {
-                Write-At 2 $row $hl Yellow
+                $plain = " $hl".PadRight($innerW)
+                if ($plain.Length -gt $innerW) { $plain = $plain.Substring(0, $innerW) }
+                Write-At $xL  $row "$bV" $pBdr $pBg
+                Write-At ($xL + 1) $row $plain $pPlain $pBg
+                Write-At $xR  $row "$bV" $pBdr $pBg
                 $row++
             }
-            $row++
+
+            Write-At $xL $row ("$bBL" + ([string]$bH * $innerW) + "$bBR") $pBdr $pBg
+            $row += 2
         }
         Write-At 2 $row $title Cyan
         Write-At 2 ($row + 1) ('-' * [Math]::Min($title.Length + 2, $w)) DarkCyan
@@ -1089,8 +1143,8 @@ while ($true) {
     $HeadsUp = ""
     if ($null -ne $ModInfo) {
         $modUpdated = if ($null -ne $ModInfo.date_updated) { (Get-Date "1970-01-01T00:00:00Z").AddSeconds($ModInfo.date_updated).ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss") } else { "Unknown" }
-        $HeadsUp += "Target Mod : $($ModInfo.name)`n"
-        $HeadsUp += "Updated    : $modUpdated`n"
+        $HeadsUp += "Target Mod: $($ModInfo.name) (ID: $ModId)`n"
+        $HeadsUp += "Updated: $modUpdated`n"
         
         $TargetFileId = $null
         if (-not [string]::IsNullOrWhiteSpace($ModInfo.metadata_blob)) {
@@ -1114,17 +1168,16 @@ while ($true) {
                 $anName = if ($anId -ne "None" -and $FileCache.ContainsKey($anId)) { $FileCache[$anId] } elseif ($anId -ne "None") { "Unknown" } else { "None" }
                 $svName = if ($svId -ne "None" -and $FileCache.ContainsKey($svId)) { $FileCache[$svId] } elseif ($svId -ne "None") { "Unknown" } else { "None" }
 
-                $HeadsUp += "Live Files :`n"
-                $HeadsUp += "        Win : $pcName ($pcId)`n"
-                $HeadsUp += "        And : $anName ($anId)`n"
-                $HeadsUp += "        Svr : $svName ($svId)`n"
+                $HeadsUp += "  Win: $pcName ($pcId)`n"
+                $HeadsUp += "  And: $anName ($anId)`n"
+                $HeadsUp += "  Svr: $svName ($svId)`n"
                 
                 if ($pcId -ne "None") { $TargetFileId = $pcId }
                 elseif ($svId -ne "None") { $TargetFileId = $svId }
                 elseif ($anId -ne "None") { $TargetFileId = $anId }
             } catch {}
         } else {
-            $HeadsUp += "Live Files : No metadata_blob found.`n"
+            $HeadsUp += "Live Files: No metadata_blob found.`n"
         }
 
         $cLogStr = "None"
@@ -1140,12 +1193,12 @@ while ($true) {
 
         $cLogStr = $cLogStr -replace " \((Server|Windows|Android|Metadata)\)$", ""
         $cLogLines = ($cLogStr -replace "`r", "") -split "`n"
-        $HeadsUp += "Changelog  : $($cLogLines[0])`n"
+        $HeadsUp += "Changelog: $($cLogLines[0])`n"
         for ($i = 1; $i -lt $cLogLines.Count; $i++) {
-            $HeadsUp += "             $($cLogLines[$i])`n"
+            $HeadsUp += "  $($cLogLines[$i])`n"
         }
     } else {
-        $HeadsUp += "Target Mod : <Failed to retrieve data>`n"
+        $HeadsUp += "Target Mod: <Failed to retrieve data>`n"
     }
 
     $MenuTitle = "Mod.io Multipart Uploader"
@@ -1555,7 +1608,7 @@ if ($Choice -eq "1") {
             "Go Back"
         )
         
-        $EditSub = "Editing Mod ID: $ModId`nUse Up/Down Arrows to navigate. Press Enter to select."
+        $EditSub = "Target Mod: $($CurrentModInfo.name) (ID: $ModId)`nUse Up/Down Arrows to navigate. Press Enter to select."
         $EditChoice = Show-TuiMenu -Title "Edit Mod Details" -Subtitle $EditSub -Options $EditOpts
         
         if ($EditChoice -eq "5" -or $EditChoice -eq "0") {
@@ -1613,7 +1666,7 @@ if ($Choice -eq "1") {
                         Invoke-RestMethod -Uri $DelUri -Method Delete -Headers $Headers | Out-Null
                     }
                 }
-                Show-Status 'Tags updated successfully!' Green
+                Show-Status "Tags updated successfully!`n`nNote: Changes may take several minutes to appear on Mod.io." Green
             } catch {
                 $errDetails = $_.Exception.Message
                 if ($null -ne $_.Exception.Response) {
@@ -1649,8 +1702,7 @@ if ($Choice -eq "1") {
                 try {
                     $Bytes = [System.Text.Encoding]::GetEncoding("iso-8859-1").GetBytes($MultipartBody)
                     Invoke-RestMethod -Uri "$BaseUrl/media" -Method Post -Headers $Headers -Body $Bytes -ContentType "multipart/form-data; boundary=$Boundary" | Out-Null
-                    Write-Host "Logo updated successfully!" -ForegroundColor Green
-                    Start-Sleep -Seconds 2
+                    Show-Status 'Logo updated successfully!' Green
                 } catch {
                     Write-Host "Failed to update logo: $($_.Exception.Message)" -ForegroundColor Red
                     if ($null -ne $_.Exception.Response) {
@@ -1677,7 +1729,4 @@ if ($Choice -eq "1") {
 } else {
     Write-Host "Invalid selection. Going back to main menu." -ForegroundColor Red
 }
-
-Write-Host "`nOperation complete. Press any key to return to main menu..." -ForegroundColor DarkGray
-[Console]::ReadKey($true) | Out-Null
 }
